@@ -777,6 +777,43 @@ std::vector<std::filesystem::path> GetLibrarySearchPaths() {
   return paths;
 }
 
+// Helper function to find library directories
+std::vector<std::filesystem::path> GetLibrarySearchPaths() {
+  std::vector<std::filesystem::path> paths;
+  
+  // Check current directory library
+  auto cwdLib = std::filesystem::current_path() / "library";
+  if (std::filesystem::exists(cwdLib) && std::filesystem::is_directory(cwdLib)) {
+    paths.push_back(cwdLib);
+  }
+  
+  // Check _/library directory
+  auto underscoreLib = std::filesystem::current_path() / "_" / "library";
+  if (std::filesystem::exists(underscoreLib) && std::filesystem::is_directory(underscoreLib)) {
+    paths.push_back(underscoreLib);
+  }
+  
+  // Check for library subdirectories (like web version's folder structure)
+  // Store initial size to avoid iterating over newly added paths
+  size_t initialSize = paths.size();
+  for (size_t i = 0; i < initialSize; ++i) {
+    const auto& libPath = paths[i];
+    if (std::filesystem::exists(libPath) && std::filesystem::is_directory(libPath)) {
+      try {
+        for (const auto& entry : std::filesystem::directory_iterator(libPath)) {
+          if (entry.is_directory()) {
+            paths.push_back(entry.path());
+          }
+        }
+      } catch (const std::filesystem::filesystem_error&) {
+        // Ignore permission errors, etc.
+      }
+    }
+  }
+  
+  return paths;
+}
+
 JSModuleDef *FilesystemModuleLoader(JSContext *ctx, const char *module_name, void *opaque) {
   auto *data = static_cast<ModuleLoaderData *>(opaque);
   
