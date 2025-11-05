@@ -1,5 +1,3 @@
-build/
-build-web/
 build/*
 _/build-web/*
 .DS_Store

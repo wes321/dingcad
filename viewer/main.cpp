@@ -703,6 +703,80 @@ std::vector<std::filesystem::path> GetLibrarySearchPaths() {
   return paths;
 }
 
+// Helper function to find library directories
+std::vector<std::filesystem::path> GetLibrarySearchPaths() {
+  std::vector<std::filesystem::path> paths;
+  
+  // Check current directory library
+  auto cwdLib = std::filesystem::current_path() / "library";
+  if (std::filesystem::exists(cwdLib) && std::filesystem::is_directory(cwdLib)) {
+    paths.push_back(cwdLib);
+  }
+  
+  // Check _/library directory
+  auto underscoreLib = std::filesystem::current_path() / "_" / "library";
+  if (std::filesystem::exists(underscoreLib) && std::filesystem::is_directory(underscoreLib)) {
+    paths.push_back(underscoreLib);
+  }
+  
+  // Check for library subdirectories (like web version's folder structure)
+  // Store initial size to avoid iterating over newly added paths
+  size_t initialSize = paths.size();
+  for (size_t i = 0; i < initialSize; ++i) {
+    const auto& libPath = paths[i];
+    if (std::filesystem::exists(libPath) && std::filesystem::is_directory(libPath)) {
+      try {
+        for (const auto& entry : std::filesystem::directory_iterator(libPath)) {
+          if (entry.is_directory()) {
+            paths.push_back(entry.path());
+          }
+        }
+      } catch (const std::filesystem::filesystem_error&) {
+        // Ignore permission errors, etc.
+      }
+    }
+  }
+  
+  return paths;
+}
+
+// Helper function to find library directories
+std::vector<std::filesystem::path> GetLibrarySearchPaths() {
+  std::vector<std::filesystem::path> paths;
+  
+  // Check current directory library
+  auto cwdLib = std::filesystem::current_path() / "library";
+  if (std::filesystem::exists(cwdLib) && std::filesystem::is_directory(cwdLib)) {
+    paths.push_back(cwdLib);
+  }
+  
+  // Check _/library directory
+  auto underscoreLib = std::filesystem::current_path() / "_" / "library";
+  if (std::filesystem::exists(underscoreLib) && std::filesystem::is_directory(underscoreLib)) {
+    paths.push_back(underscoreLib);
+  }
+  
+  // Check for library subdirectories (like web version's folder structure)
+  // Store initial size to avoid iterating over newly added paths
+  size_t initialSize = paths.size();
+  for (size_t i = 0; i < initialSize; ++i) {
+    const auto& libPath = paths[i];
+    if (std::filesystem::exists(libPath) && std::filesystem::is_directory(libPath)) {
+      try {
+        for (const auto& entry : std::filesystem::directory_iterator(libPath)) {
+          if (entry.is_directory()) {
+            paths.push_back(entry.path());
+          }
+        }
+      } catch (const std::filesystem::filesystem_error&) {
+        // Ignore permission errors, etc.
+      }
+    }
+  }
+  
+  return paths;
+}
+
 JSModuleDef *FilesystemModuleLoader(JSContext *ctx, const char *module_name, void *opaque) {
   auto *data = static_cast<ModuleLoaderData *>(opaque);
   
@@ -731,24 +805,6 @@ JSModuleDef *FilesystemModuleLoader(JSContext *ctx, const char *module_name, voi
   }
   resolved = std::filesystem::absolute(resolved).lexically_normal();
 
-#ifdef __EMSCRIPTEN__
-  EM_ASM({
-    console.log('📦 ModuleLoader called for:', UTF8ToString($0));
-    console.log('📦 Current dependencies count:', $1);
-  }, resolved.string().c_str(), data ? data->dependencies.size() : 0);
-#endif
-
-  // Check for circular dependency to prevent stack overflow
-  if (data && data->dependencies.find(resolved) != data->dependencies.end()) {
-#ifdef __EMSCRIPTEN__
-    EM_ASM({
-      console.error('⚠️ Circular dependency detected:', UTF8ToString($0));
-    }, resolved.string().c_str());
-#endif
-    JS_ThrowReferenceError(ctx, "Circular dependency detected: module '%s' is already being loaded", resolved.string().c_str());
-    return nullptr;
-  }
-
   // Try to read the file
   auto source = ReadTextFile(resolved);
   
@@ -758,11 +814,6 @@ JSModuleDef *FilesystemModuleLoader(JSContext *ctx, const char *module_name, voi
     for (const auto& libPath : libraryPaths) {
       std::filesystem::path libResolved = libPath / module_name;
       libResolved = std::filesystem::absolute(libResolved).lexically_normal();
-      
-      // Check for circular dependency on library paths too
-      if (data && data->dependencies.find(libResolved) != data->dependencies.end()) {
-        continue; // Skip this path if already in dependencies
-      }
       
       // Try exact match
       source = ReadTextFile(libResolved);
@@ -775,12 +826,6 @@ JSModuleDef *FilesystemModuleLoader(JSContext *ctx, const char *module_name, voi
       if (!source) {
         libResolved = libPath / (std::string(module_name) + ".js");
         libResolved = std::filesystem::absolute(libResolved).lexically_normal();
-        
-        // Check for circular dependency on library paths with .js extension too
-        if (data && data->dependencies.find(libResolved) != data->dependencies.end()) {
-          continue; // Skip this path if already in dependencies
-        }
-        
         source = ReadTextFile(libResolved);
         if (source) {
           resolved = libResolved;
@@ -791,7 +836,7 @@ JSModuleDef *FilesystemModuleLoader(JSContext *ctx, const char *module_name, voi
   }
 
   if (!source) {
-    JS_ThrowReferenceError(ctx, "Unable to load module '%s'", resolved.string().c_str());
+    JS_ThrowReferenceError(ctx, "Unable to load module '%s'", module_name);
     return nullptr;
   }
 
@@ -799,6 +844,7 @@ JSModuleDef *FilesystemModuleLoader(JSContext *ctx, const char *module_name, voi
     data->baseDir = resolved.parent_path();
     data->dependencies.insert(resolved);
   }
+
   const std::string moduleName = resolved.string();
   
 #ifdef __EMSCRIPTEN__

@@ -1046,10 +1046,6 @@ JSValue JsLoadMesh(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv) {
     forceCleanup = flag == 1;
   }
 
-#ifdef __EMSCRIPTEN__
-  // Mesh import is not available in web builds (MANIFOLD_EXPORT is disabled)
-  return JS_ThrowInternalError(ctx, "loadMesh is not available in web builds. Mesh file loading requires MANIFOLD_EXPORT which is disabled for web.");
-#else
   try {
 #if defined(MANIFOLD_EXPORT) && MANIFOLD_EXPORT
     manifold::MeshGL mesh = manifold::ImportMesh(fsPath.string(), forceCleanup);
@@ -1069,7 +1065,6 @@ JSValue JsLoadMesh(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv) {
     PrintLoadMeshError(msg);
     return JS_ThrowInternalError(ctx, "loadMesh failed: %s", e.what());
   }
-#endif
 }
 
 
