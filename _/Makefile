@@ -1,4 +1,4 @@
-.PHONY: help init build run clean configure all check-deps test test-unit test-integration test-scenes test-performance test-syntax dev web web-check web-needs-rebuild kill-port
+.PHONY: help init build run clean configure all check-deps test test-unit test-integration test-scenes test-performance test-syntax dev web web-check web-needs-rebuild kill-port osx
 
 # Variables
 BUILD_DIR := build
@@ -49,6 +49,15 @@ build: configure ## Build the project (configure if needed)
 run: build ## Build and run the viewer
 	@echo "Running viewer..."
 	"$(VIEWER_BIN)" $(ARGS)
+
+osx: build ## Build and run the native macOS application
+	@echo "🚀 Running DingCAD viewer on macOS..."
+	@if [ ! -x "$(VIEWER_BIN)" ]; then \
+		echo "✗ Viewer executable not found. Building..."; \
+		make build; \
+	fi
+	@echo "✓ Starting DingCAD viewer..."
+	@"$(VIEWER_BIN)" $(ARGS)
 
 all: clean build ## Clean, configure, and build everything
 
@@ -105,6 +114,10 @@ test-performance: build ## Run performance tests only
 test-syntax: ## Check syntax of all test files
 	@echo "Checking test file syntax..."
 	@./_/tests/scripts/test_syntax.sh
+
+library-manifest: ## Generate library-manifest.json from library directories
+	@echo "Generating library manifest..."
+	@./_/scripts/generate-library-manifest.sh
 
 yacine: ## Sync fork with upstream (yacineMTB/dingcad) and create PR with test results
 	@echo "Syncing fork with upstream and creating PR..."
@@ -169,13 +182,26 @@ web: ## Build WebAssembly version for browser (requires Emscripten)
 		else \
 			emmake make -j$$(sysctl -n hw.ncpu 2>/dev/null || echo 4); \
 		fi
+	@echo "Generating library manifest (ensuring it's up to date)..."
+	@make library-manifest 2>&1 | grep -v "^make" || true
 	@echo "Copying latest web files to _/build-web (always fresh)..."
 	@cp -f _/web/index.html _/build-web/index.html 2>/dev/null || true
 	@cp -f _/web/simple.html _/build-web/simple.html 2>/dev/null || true
 	@cp -f _/config/library-manifest.json _/build-web/library-manifest.json 2>/dev/null || echo "⚠ Warning: library-manifest.json not found - run 'make library-manifest' first"
-	@echo "Copying library folder to _/build-web..."
+	@echo "Copying library folders to _/build-web..."
 	@rm -rf _/build-web/library 2>/dev/null || true
-	@cp -r _/library _/build-web/library 2>/dev/null || echo "⚠ Warning: _/library folder not found"
+	@rm -rf _/build-web/_/library 2>/dev/null || true
+	@if [ -d "library" ]; then \
+		cp -r library _/build-web/library || echo "⚠ Warning: Failed to copy root library folder"; \
+	else \
+		echo "⚠ Warning: root library folder not found at ./library"; \
+	fi
+	@mkdir -p _/build-web/_ 2>/dev/null || true
+	@if [ -d "_/library" ]; then \
+		cp -r _/library _/build-web/_/library || echo "⚠ Warning: Failed to copy _/library folder"; \
+	else \
+		echo "⚠ Warning: _/library folder not found"; \
+	fi
 	@echo "✓ Files copied to _/build-web"
 	@echo "✓ Web build complete: _/build-web/dingcad_viewer.js"
 	@echo "  Serve with: cd _/build-web && python3 -m http.server 8000"

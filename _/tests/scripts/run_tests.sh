@@ -286,17 +286,21 @@ cp "$MARKDOWN_RESULTS" "$LATEST_DIR/results.md"
 
 # Update results README with latest info
 RESULTS_README="$TEST_DIR/results/README.md"
-python3 <<PYTHON_SCRIPT
+python3 <<'END_PYTHON'
 import json
+import sys
 from datetime import datetime
 
-with open('$JSON_RESULTS', 'r') as f:
+json_results = sys.argv[1]
+results_readme = sys.argv[2]
+
+with open(json_results, 'r') as f:
     data = json.load(f)
 
 pass_rate = (data['summary']['passed'] / data['summary']['total'] * 100) if data['summary']['total'] > 0 else 0.0
 status_emoji = "✅" if data['summary']['failed'] == 0 and data['summary']['passed'] > 0 else ("❌" if data['summary']['failed'] > 0 else "⚠️")
 
-with open('$RESULTS_README', 'w') as f:
+with open(results_readme, 'w') as f:
     f.write("# Test Results\n\n")
     f.write("This directory contains test results for the DingCAD project.\n\n")
     f.write("## Latest Test Results\n\n")
@@ -321,7 +325,7 @@ with open('$RESULTS_README', 'w') as f:
     f.write("- `results.md` - Human-readable test report\n\n")
     f.write("---\n\n")
     f.write("*Last updated: {}*\n".format(datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')))
-PYTHON_SCRIPT
+END_PYTHON "$JSON_RESULTS" "$RESULTS_README"
 
 # Summary
 echo ""

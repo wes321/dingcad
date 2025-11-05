@@ -1051,6 +1051,7 @@ JSValue JsLoadMesh(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv) {
   return JS_ThrowInternalError(ctx, "loadMesh is not available in web builds. Mesh file loading requires MANIFOLD_EXPORT which is disabled for web.");
 #else
   try {
+#if defined(MANIFOLD_EXPORT) && MANIFOLD_EXPORT
     manifold::MeshGL mesh = manifold::ImportMesh(fsPath.string(), forceCleanup);
     if (mesh.NumTri() == 0 || mesh.NumVert() == 0) {
       const std::string msg = "loadMesh: imported mesh is empty for '" + resolvedPath + "'";
@@ -1060,6 +1061,9 @@ JSValue JsLoadMesh(JSContext *ctx, JSValueConst, int argc, JSValueConst *argv) {
     manifold::Manifold manifold(mesh);
     auto handle = std::make_shared<manifold::Manifold>(std::move(manifold));
     return WrapManifold(ctx, std::move(handle));
+#else
+    return JS_ThrowInternalError(ctx, "loadMesh: mesh import is not available in web builds. This feature requires assimp library and is disabled for web.");
+#endif
   } catch (const std::exception &e) {
     const std::string msg = std::string("loadMesh failed: ") + e.what();
     PrintLoadMeshError(msg);

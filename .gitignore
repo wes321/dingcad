@@ -1,5 +1,7 @@
 build/
 build-web/
+build/*
+_/build-web/*
 .DS_Store
 
 # Test results - keep latest/ and README.md, ignore timestamped directories

@@ -25,13 +25,12 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s ALLOW_MEMORY_GROWTH=1 -s MAXIMUM_MEMO
 # QuickJS itself uses 2MB stack size to prevent stack overflow during parsing
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s STACK_SIZE=2097152")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s EXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS','MEMFS','addRunDependency','removeRunDependency','stackAlloc','getValue']")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s EXPORTED_FUNCTIONS=['_loadSceneFromCode','_getStatusMessage','_logBuildVersion','_main']")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s INVOKE_RUN=1")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s EXPORTED_FUNCTIONS=['_loadSceneFromCode','_getStatusMessage','_logBuildVersion']")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s MODULARIZE=1 -s EXPORT_NAME='createDingCADModule' -s EXPORT_ES6=1")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s FORCE_FILESYSTEM=1 -s ASSERTIONS=1")
 
 # Disable TBB for web build (not needed for single-threaded web)
-# Disable mesh export (requires assimp, not needed for web build)
+# Disable mesh export for web build (not needed, and avoids assimp dependency)
 set(MANIFOLD_PAR OFF CACHE BOOL "" FORCE)
 set(MANIFOLD_TEST OFF CACHE BOOL "" FORCE)
 set(MANIFOLD_PYBIND OFF CACHE BOOL "" FORCE)
@@ -39,7 +38,7 @@ set(MANIFOLD_JSBIND OFF CACHE BOOL "" FORCE)
 set(MANIFOLD_CROSS_SECTION OFF CACHE BOOL "" FORCE)
 set(MANIFOLD_EXPORT OFF CACHE BOOL "" FORCE)
 
-# Get the repository root (two levels up from web directory, since web is in _/web/)
+# Get the repository root (two levels up from _/web/ directory)
 get_filename_component(REPO_ROOT "${CMAKE_SOURCE_DIR}/../.." ABSOLUTE)
 
 # Generate version header (after REPO_ROOT is defined)
@@ -58,9 +57,11 @@ endif()
 
 string(TIMESTAMP BUILD_DATE "%Y%m%d-%H%M%S")
 set(BUILD_VERSION "${BUILD_DATE}-${GIT_COMMIT}")
+set(BUILD_COMMIT "${GIT_COMMIT}")
 
+# Generate version header
 configure_file(
-  ${REPO_ROOT}/_/viewer/version.h.in
+  ${REPO_ROOT}/viewer/version.h.in
   ${CMAKE_CURRENT_BINARY_DIR}/version.h
   @ONLY
 )
@@ -141,7 +142,7 @@ endif()
 
 # Main viewer executable for web
 add_executable(dingcad_viewer_web
-  ${REPO_ROOT}/viewer/main.cpp
+  web_main.cpp
   ${REPO_ROOT}/viewer/js_bindings.cpp
 )
 
@@ -149,9 +150,13 @@ target_include_directories(dingcad_viewer_web
   PRIVATE
     ${REPO_ROOT}/vendor/manifold/include
     ${REPO_ROOT}/vendor/quickjs
+    ${REPO_ROOT}/viewer
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
 )
+
+# Add compile definition to disable MANIFOLD_EXPORT for web build
+target_compile_definitions(dingcad_viewer_web PRIVATE MANIFOLD_EXPORT=0)
 
 # Add Raylib include directory if found
 if(RAYLIB_INCLUDE_DIR)

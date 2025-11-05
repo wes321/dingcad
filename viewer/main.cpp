@@ -666,6 +666,43 @@ JSModuleDef *DummyModuleLoader(JSContext *ctx, const char *module_name, void *op
   return nullptr;
 }
 
+// Helper function to find library directories
+std::vector<std::filesystem::path> GetLibrarySearchPaths() {
+  std::vector<std::filesystem::path> paths;
+  
+  // Check current directory library
+  auto cwdLib = std::filesystem::current_path() / "library";
+  if (std::filesystem::exists(cwdLib) && std::filesystem::is_directory(cwdLib)) {
+    paths.push_back(cwdLib);
+  }
+  
+  // Check _/library directory
+  auto underscoreLib = std::filesystem::current_path() / "_" / "library";
+  if (std::filesystem::exists(underscoreLib) && std::filesystem::is_directory(underscoreLib)) {
+    paths.push_back(underscoreLib);
+  }
+  
+  // Check for library subdirectories (like web version's folder structure)
+  // Store initial size to avoid iterating over newly added paths
+  size_t initialSize = paths.size();
+  for (size_t i = 0; i < initialSize; ++i) {
+    const auto& libPath = paths[i];
+    if (std::filesystem::exists(libPath) && std::filesystem::is_directory(libPath)) {
+      try {
+        for (const auto& entry : std::filesystem::directory_iterator(libPath)) {
+          if (entry.is_directory()) {
+            paths.push_back(entry.path());
+          }
+        }
+      } catch (const std::filesystem::filesystem_error&) {
+        // Ignore permission errors, etc.
+      }
+    }
+  }
+  
+  return paths;
+}
+
 JSModuleDef *FilesystemModuleLoader(JSContext *ctx, const char *module_name, void *opaque) {
   auto *data = static_cast<ModuleLoaderData *>(opaque);
   
@@ -684,6 +721,8 @@ JSModuleDef *FilesystemModuleLoader(JSContext *ctx, const char *module_name, voi
   }
   
   std::filesystem::path resolved(module_name);
+  
+  // First try direct path resolution
   if (resolved.is_relative()) {
     const std::filesystem::path base = data && !data->baseDir.empty()
                                            ? data->baseDir
@@ -710,20 +749,56 @@ JSModuleDef *FilesystemModuleLoader(JSContext *ctx, const char *module_name, voi
     return nullptr;
   }
 
+  // Try to read the file
+  auto source = ReadTextFile(resolved);
+  
+  // If not found and it's a relative path, try library directories
+  if (!source && module_name[0] != '/' && module_name[0] != '\\') {
+    auto libraryPaths = GetLibrarySearchPaths();
+    for (const auto& libPath : libraryPaths) {
+      std::filesystem::path libResolved = libPath / module_name;
+      libResolved = std::filesystem::absolute(libResolved).lexically_normal();
+      
+      // Check for circular dependency on library paths too
+      if (data && data->dependencies.find(libResolved) != data->dependencies.end()) {
+        continue; // Skip this path if already in dependencies
+      }
+      
+      // Try exact match
+      source = ReadTextFile(libResolved);
+      if (source) {
+        resolved = libResolved;
+        break;
+      }
+      
+      // Try with .js extension
+      if (!source) {
+        libResolved = libPath / (std::string(module_name) + ".js");
+        libResolved = std::filesystem::absolute(libResolved).lexically_normal();
+        
+        // Check for circular dependency on library paths with .js extension too
+        if (data && data->dependencies.find(libResolved) != data->dependencies.end()) {
+          continue; // Skip this path if already in dependencies
+        }
+        
+        source = ReadTextFile(libResolved);
+        if (source) {
+          resolved = libResolved;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!source) {
+    JS_ThrowReferenceError(ctx, "Unable to load module '%s'", resolved.string().c_str());
+    return nullptr;
+  }
+
   if (data) {
     data->baseDir = resolved.parent_path();
     data->dependencies.insert(resolved);
   }
-
-  auto source = ReadTextFile(resolved);
-  if (!source) {
-    JS_ThrowReferenceError(ctx, "Unable to load module '%s'", resolved.string().c_str());
-    if (data) {
-      data->dependencies.erase(resolved);
-    }
-    return nullptr;
-  }
-
   const std::string moduleName = resolved.string();
   
 #ifdef __EMSCRIPTEN__
@@ -764,6 +839,106 @@ struct LoadResult {
   std::string message;
   std::vector<std::filesystem::path> dependencies;
 };
+
+// Load scene from code string (like web version)
+LoadResult LoadSceneFromCode(JSRuntime *runtime, const std::string &code) {
+  LoadResult result;
+  
+  if (code.empty()) {
+    result.message = "No scene code provided";
+    return result;
+  }
+  
+  g_module_loader_data.baseDir = std::filesystem::current_path();
+  g_module_loader_data.dependencies.clear();
+  
+  JSContext *ctx = JS_NewContext(runtime);
+  RegisterBindings(ctx);
+  
+  auto captureException = [&]() {
+    JSValue exc = JS_GetException(ctx);
+    JSValue stack = JS_GetPropertyStr(ctx, exc, "stack");
+    const char *stackStr = JS_ToCString(ctx, JS_IsUndefined(stack) ? exc : stack);
+    result.message = stackStr ? stackStr : "JavaScript error";
+    JS_FreeCString(ctx, stackStr);
+    JS_FreeValue(ctx, stack);
+    JS_FreeValue(ctx, exc);
+  };
+  auto assignDependencies = [&]() {
+    result.dependencies.assign(g_module_loader_data.dependencies.begin(),
+                               g_module_loader_data.dependencies.end());
+  };
+  
+  JSValue moduleFunc = JS_Eval(ctx, code.c_str(), code.size(), "scene.js",
+                               JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+  if (JS_IsException(moduleFunc)) {
+    captureException();
+    assignDependencies();
+    JS_FreeContext(ctx);
+    return result;
+  }
+  
+  if (JS_ResolveModule(ctx, moduleFunc) < 0) {
+    captureException();
+    JS_FreeValue(ctx, moduleFunc);
+    assignDependencies();
+    JS_FreeContext(ctx);
+    return result;
+  }
+  
+  auto *module = static_cast<JSModuleDef *>(JS_VALUE_GET_PTR(moduleFunc));
+  JSValue evalResult = JS_EvalFunction(ctx, moduleFunc);
+  if (JS_IsException(evalResult)) {
+    captureException();
+    assignDependencies();
+    JS_FreeContext(ctx);
+    return result;
+  }
+  JS_FreeValue(ctx, evalResult);
+  
+  JSValue moduleNamespace = JS_GetModuleNamespace(ctx, module);
+  if (JS_IsException(moduleNamespace)) {
+    captureException();
+    assignDependencies();
+    JS_FreeContext(ctx);
+    return result;
+  }
+  
+  JSValue sceneVal = JS_GetPropertyStr(ctx, moduleNamespace, "scene");
+  if (JS_IsException(sceneVal)) {
+    JS_FreeValue(ctx, moduleNamespace);
+    captureException();
+    assignDependencies();
+    JS_FreeContext(ctx);
+    return result;
+  }
+  JS_FreeValue(ctx, moduleNamespace);
+  
+  if (JS_IsUndefined(sceneVal)) {
+    JS_FreeValue(ctx, sceneVal);
+    JS_FreeContext(ctx);
+    result.message = "Scene module must export 'scene'";
+    assignDependencies();
+    return result;
+  }
+  
+  auto sceneHandle = GetManifoldHandle(ctx, sceneVal);
+  if (!sceneHandle) {
+    JS_FreeValue(ctx, sceneVal);
+    JS_FreeContext(ctx);
+    result.message = "Exported 'scene' is not a manifold";
+    assignDependencies();
+    return result;
+  }
+  
+  result.manifold = sceneHandle;
+  result.success = true;
+  result.message = "Scene loaded from code";
+  assignDependencies();
+  JS_FreeValue(ctx, sceneVal);
+  JS_FreeContext(ctx);
+  return result;
+}
 
 LoadResult LoadSceneFromFile(JSRuntime *runtime, const std::filesystem::path &path) {
   LoadResult result;
