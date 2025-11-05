@@ -283,6 +283,14 @@
         .library-item-desc {
             font-size: 12px;
             color: #a0a0a0;
+            margin-bottom: 4px;
+        }
+        
+        .library-item-dims {
+            font-size: 11px;
+            color: #888;
+            font-family: 'Courier New', monospace;
+            margin-top: 2px;
         }
         
         .library-folder-header {
@@ -369,6 +377,56 @@
         
         #status.success {
             color: #51cf66;
+        }
+        
+        #unsaved-warning {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: #ff6b6b;
+            color: #fff;
+            padding: 12px 20px;
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            z-index: 10000;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+            font-size: 14px;
+        }
+        
+        #unsaved-warning.visible {
+            display: flex;
+        }
+        
+        #unsaved-warning-message {
+            flex: 1;
+        }
+        
+        #unsaved-warning-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        #unsaved-warning button {
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: #fff;
+            padding: 6px 12px;
+            font-size: 13px;
+        }
+        
+        #unsaved-warning button:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+        
+        #unsaved-warning button.copy-btn {
+            background: rgba(255, 255, 255, 0.25);
+        }
+        
+        #unsaved-warning button.copy-btn:hover {
+            background: rgba(255, 255, 255, 0.35);
         }
         
         .loading {
@@ -506,6 +564,15 @@
     </style>
 </head>
 <body>
+        <div id="unsaved-warning">
+            <div id="unsaved-warning-message">
+                ⚠️ You have unsaved changes. If you refresh the page, your changes will be lost. Copy your code to clipboard to save it.
+            </div>
+            <div id="unsaved-warning-actions">
+                <button id="copy-code-btn" class="copy-btn" onclick="copyCodeToClipboard()">Copy Code</button>
+            </div>
+        </div>
+        
         <div id="container">
         <div id="version-history-panel">
             <div id="version-history-header">
@@ -712,6 +779,8 @@
         // Set up resize observer and window resize listener
         let canvasResizeSetup = false;
         let resizeTimeout = null;
+        let editorPanelTransitioning = false; // Flag to prevent resize during editor panel transitions
+        
         function setupCanvasResize() {
             if (canvasResizeSetup) return; // Already set up
             const container = document.getElementById('canvas-container');
@@ -723,29 +792,45 @@
             // Use ResizeObserver for better performance and accuracy
             // Debounce resize events to prevent excessive calls during panel animations
             const resizeObserver = new ResizeObserver(() => {
+                // Don't resize during editor panel transitions
+                if (editorPanelTransitioning) {
+                    return;
+                }
+                
                 // Clear any pending resize
                 if (resizeTimeout) {
                     clearTimeout(resizeTimeout);
                 }
                 // Debounce resize to avoid triggering during panel animations
+                // Use longer debounce to cover editor panel animation (300ms)
                 resizeTimeout = setTimeout(() => {
-                    resizeCanvas();
+                    // Double-check we're not in a transition
+                    if (!editorPanelTransitioning) {
+                        resizeCanvas();
+                    }
                     resizeTimeout = null;
-                }, 150); // 150ms debounce
+                }, 400); // 400ms debounce (longer than 300ms transition)
             });
             resizeObserver.observe(container);
             
             // Fallback to window resize for older browsers
             window.addEventListener('resize', () => {
+                // Don't resize during editor panel transitions
+                if (editorPanelTransitioning) {
+                    return;
+                }
+                
                 // Clear any pending resize
                 if (resizeTimeout) {
                     clearTimeout(resizeTimeout);
                 }
                 // Debounce resize
                 resizeTimeout = setTimeout(() => {
-                    resizeCanvas();
+                    if (!editorPanelTransitioning) {
+                        resizeCanvas();
+                    }
                     resizeTimeout = null;
-                }, 150);
+                }, 400);
             });
             
             canvasResizeSetup = true;
@@ -758,6 +843,9 @@
         let codeEditorVisible = false; // Start minimized
         let currentFileName = null;
         let saveTimeout = null;
+        let originalCode = null; // Track original code from library
+        let hasUnsavedChanges = false; // Track if user has modified code
+        let isUserEditing = false; // Track if user is actively editing (not programmatic changes)
         
         // Version History System
         const VERSION_HISTORY_KEY = 'dingcad_version_history';
@@ -853,7 +941,7 @@
             
             isRestoringVersion = true;
             if (editor) {
-                editor.setValue(version.code);
+                setEditorCode(version.code, false); // Don't update original code when restoring version
                 if (!useFallbackEditor) {
                     // Force Monaco to update
                     setTimeout(() => {
@@ -862,6 +950,7 @@
                         if (model) {
                             editor.setPosition({ lineNumber: 1, column: 1 });
                         }
+                        editor.render(true);
                     }, 50);
                 }
             }
@@ -981,6 +1070,19 @@
             
             // Auto-save and execute on change (with debounce)
             fallbackEditor.addEventListener('input', () => {
+                // Track changes if user is editing
+                if (isUserEditing) {
+                    const currentCode = fallbackEditor.value;
+                    // Check if code has changed from original
+                    if (originalCode !== null && currentCode !== originalCode) {
+                        hasUnsavedChanges = true;
+                        showUnsavedWarning();
+                    } else if (currentCode === originalCode) {
+                        hasUnsavedChanges = false;
+                        hideUnsavedWarning();
+                    }
+                }
+                
                 if (saveTimeout) clearTimeout(saveTimeout);
                 saveTimeout = setTimeout(() => {
                     const code = fallbackEditor.value;
@@ -1025,6 +1127,19 @@
                         
                         // Auto-save and execute on change (with debounce)
                         editor.onDidChangeModelContent(() => {
+                            // Only track changes if user is editing (not programmatic)
+                            if (isUserEditing) {
+                                const currentCode = editor.getValue();
+                                // Check if code has changed from original
+                                if (originalCode !== null && currentCode !== originalCode) {
+                                    hasUnsavedChanges = true;
+                                    showUnsavedWarning();
+                                } else if (currentCode === originalCode) {
+                                    hasUnsavedChanges = false;
+                                    hideUnsavedWarning();
+                                }
+                            }
+                            
                             if (saveTimeout) clearTimeout(saveTimeout);
                             saveTimeout = setTimeout(() => {
                                 const code = editor.getValue();
@@ -1053,6 +1168,9 @@
         function toggleCodeEditorPanel() {
             const panel = document.getElementById('code-editor-panel');
             
+            // Set flag to prevent canvas resize during transition
+            editorPanelTransitioning = true;
+            
             if (panel.classList.contains('minimized')) {
                 // Expand
                 panel.classList.remove('minimized');
@@ -1061,25 +1179,36 @@
                     // Force Monaco to re-render and re-tokenize when expanded
                     setTimeout(() => {
                         editor.layout();
-                        // Trigger a content change to force re-tokenization
                         const model = editor.getModel();
                         if (model) {
-                            const value = model.getValue();
-                            model.setValue('');
-                            model.setValue(value);
+                            // Force re-tokenization by resetting language
+                            monaco.editor.setModelLanguage(model, 'javascript');
+                            // Scroll through document to trigger tokenization
+                            const lineCount = model.getLineCount();
+                            if (lineCount > 0) {
+                                editor.revealLine(lineCount);
+                                setTimeout(() => {
+                                    editor.revealLine(1);
+                                    editor.render(true);
+                                    editor.focus();
+                                }, 50);
+                            } else {
+                                editor.render(true);
+                                editor.focus();
+                            }
                         }
-                        editor.render();
-                    }, 100);
+                    }, 150);
                 }
-                // Canvas resize will be handled automatically by the debounced ResizeObserver
-                // No need to call resizeCanvas() explicitly - this prevents reload during animation
             } else {
                 // Minimize
                 panel.classList.remove('expanded');
                 panel.classList.add('minimized');
-                // Canvas resize will be handled automatically by the debounced ResizeObserver
-                // No need to call resizeCanvas() explicitly - this prevents reload during animation
             }
+            
+            // Clear the flag after the transition completes (300ms + buffer)
+            setTimeout(() => {
+                editorPanelTransitioning = false;
+            }, 350); // 350ms to cover 300ms transition + buffer
         }
         
         document.getElementById('editor-close').addEventListener('click', (e) => {
@@ -1103,6 +1232,146 @@
                 currentFileName = null;
             }
         }
+        
+        // Helper function to set editor code with proper syntax highlighting
+        function setEditorCode(code, isUserAction = false) {
+            if (!editor) return;
+            
+            // If this is a user action (like loading library), update original code
+            // If this is programmatic (like restoring version), don't update original
+            if (isUserAction) {
+                originalCode = code;
+                hasUnsavedChanges = false;
+                hideUnsavedWarning();
+            }
+            
+            // Mark as not user editing during programmatic changes
+            isUserEditing = false;
+            
+            if (useFallbackEditor) {
+                // Fallback editor - just set value
+                editor.setValue(code);
+            } else {
+                // Monaco Editor - ensure proper tokenization
+                const model = editor.getModel();
+                if (model) {
+                    // Check if editor panel is visible
+                    const panel = document.getElementById('code-editor-panel');
+                    const isExpanded = panel.classList.contains('expanded');
+                    
+                    // Set the code - this triggers Monaco's change detection
+                    editor.setValue(code);
+                    
+                    // Force Monaco to re-tokenize by resetting the language
+                    // This ensures the entire document is properly tokenized
+                    monaco.editor.setModelLanguage(model, 'javascript');
+                    
+                    // Use a multi-step approach to ensure all lines are tokenized
+                    setTimeout(() => {
+                        // Step 1: Layout and initial render
+                        editor.layout();
+                        editor.render(true);
+                        
+                        // Step 2: Force tokenization by scrolling through the document
+                        // This ensures all lines are tokenized, even if not visible
+                        if (model.getLineCount() > 0) {
+                            // Scroll to end and back to trigger tokenization of all lines
+                            const lineCount = model.getLineCount();
+                            editor.revealLine(lineCount);
+                            setTimeout(() => {
+                                editor.revealLine(1);
+                                editor.render(true);
+                                
+                                // Step 3: Final render after tokenization
+                                setTimeout(() => {
+                                    editor.layout();
+                                    editor.render(true);
+                                    
+                                    // If expanded, ensure focus for proper rendering
+                                    if (isExpanded) {
+                                        editor.focus();
+                                    }
+                                }, 50);
+                            }, 50);
+                        } else {
+                            editor.render(true);
+                            if (isExpanded) {
+                                editor.focus();
+                            }
+                        }
+                    }, 100);
+                } else {
+                    // Fallback if model doesn't exist
+                    editor.setValue(code);
+                    setTimeout(() => {
+                        editor.layout();
+                        editor.render(true);
+                    }, 50);
+                }
+            }
+            
+            // Re-enable user editing tracking after a short delay
+            setTimeout(() => {
+                isUserEditing = true;
+            }, 200);
+        }
+        
+        // Show unsaved changes warning
+        function showUnsavedWarning() {
+            const warning = document.getElementById('unsaved-warning');
+            if (warning) {
+                warning.classList.add('visible');
+            }
+        }
+        
+        // Hide unsaved changes warning
+        function hideUnsavedWarning() {
+            const warning = document.getElementById('unsaved-warning');
+            if (warning) {
+                warning.classList.remove('visible');
+            }
+        }
+        
+        // Copy code to clipboard
+        function copyCodeToClipboard() {
+            if (!editor) return;
+            
+            const code = editor.getValue();
+            navigator.clipboard.writeText(code).then(() => {
+                const copyBtn = document.getElementById('copy-code-btn');
+                if (copyBtn) {
+                    const originalText = copyBtn.textContent;
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(() => {
+                        copyBtn.textContent = originalText;
+                    }, 2000);
+                }
+            }).catch(err => {
+                console.error('Failed to copy code:', err);
+                // Fallback for older browsers
+                const textarea = document.createElement('textarea');
+                textarea.value = code;
+                document.body.appendChild(textarea);
+                textarea.select();
+                try {
+                    document.execCommand('copy');
+                    const copyBtn = document.getElementById('copy-code-btn');
+                    if (copyBtn) {
+                        const originalText = copyBtn.textContent;
+                        copyBtn.textContent = 'Copied!';
+                        setTimeout(() => {
+                            copyBtn.textContent = originalText;
+                        }, 2000);
+                    }
+                } catch (e) {
+                    alert('Failed to copy code. Please copy manually.');
+                }
+                document.body.removeChild(textarea);
+            });
+        }
+        
+        // Make copyCodeToClipboard globally accessible for onclick handler
+        window.copyCodeToClipboard = copyCodeToClipboard;
         
         function executeCode() {
             if (!Module || !editor || !isInitialized) {
@@ -1156,6 +1425,17 @@
                         if (statusMsg && statusMsg.includes('successfully')) {
                             console.log('✅ Scene loaded successfully:', statusMsg);
                             updateStatus(statusMsg, 'success');
+                            
+                            // Calculate and update dimensions for selected library items
+                            // Only if user hasn't modified the code (to avoid overwriting their changes)
+                            if (!hasUnsavedChanges && selectedLibraryItems.size > 0) {
+                                const selectedFiles = Array.from(selectedLibraryItems)
+                                    .map(key => libraryFiles.find(f => getFileKey(f) === key))
+                                    .filter(f => f !== undefined);
+                                if (selectedFiles.length > 0) {
+                                    setTimeout(() => updateDimensionsFromLoadedScene(selectedFiles), 300);
+                                }
+                            }
                             return;
                         }
                         
@@ -1185,6 +1465,240 @@
                 console.error('❌ Code execution error:', error);
                 console.error('Error stack:', error.stack);
                     updateStatus('Error: ' + error.message, 'error');
+            }
+        }
+        
+        // Calculate dimensions for library items from the current scene
+        function calculateLibraryItemDimensions(selectedFiles) {
+            if (!Module || !isInitialized || !selectedFiles || selectedFiles.length === 0) {
+                return;
+            }
+            
+            // Don't calculate dimensions if user has unsaved changes - this would execute original code
+            if (hasUnsavedChanges) {
+                return;
+            }
+            
+            try {
+                // Try to get the bounding box from the current scene
+                // We need to execute a small snippet that gets the bounding box
+                // Since we can't directly access the scene object, we'll need to evaluate code
+                // that gets the bounding box from the exported scene
+                
+                // Get the current code from editor
+                const currentCode = editor ? editor.getValue() : '';
+                if (!currentCode || !currentCode.includes('export const scene')) {
+                    return;
+                }
+                
+                // Create a code snippet to calculate dimensions
+                // We'll evaluate the scene and get its bounding box
+                const dimensionCode = currentCode + '\n\n// Calculate dimensions\n' +
+                    'if (typeof scene !== "undefined" && scene) {\n' +
+                    '  const box = boundingBox(scene);\n' +
+                    '  const dims = {\n' +
+                    '    width: Math.round((box.max[0] - box.min[0]) * 10) / 10,\n' +
+                    '    height: Math.round((box.max[1] - box.min[1]) * 10) / 10,\n' +
+                    '    depth: Math.round((box.max[2] - box.min[2]) * 10) / 10\n' +
+                    '  };\n' +
+                    '  console.log("Dimensions:", dims);\n' +
+                    '}';
+                
+                // Execute the dimension calculation code
+                // We'll use a temporary file to evaluate this
+                try {
+                    Module.FS.writeFile('/tmp/dimensions.js', dimensionCode);
+                    // Note: This is a simplified approach - in practice, we'd need to 
+                    // actually evaluate the code and get the result back
+                    // For now, we'll try to get dimensions from the scene that was just loaded
+                    
+                    // Since we can't easily get the result back from QuickJS evaluation,
+                    // we'll store dimensions when we successfully load items
+                    // The dimensions will be calculated when items are loaded individually
+                    
+                } catch (e) {
+                    console.warn('⚠️ Could not calculate dimensions:', e);
+                }
+            } catch (error) {
+                console.warn('⚠️ Error calculating dimensions:', error);
+            }
+        }
+        
+        // Calculate dimensions for a single library item by loading it temporarily
+        async function calculateItemDimensions(file) {
+            if (!file || !Module || !isInitialized) {
+                return;
+            }
+            
+            // Don't calculate dimensions if user has unsaved changes - this would overwrite their scene
+            // This check is critical - dimension calculation executes code which would overwrite user's edits
+            if (hasUnsavedChanges && originalCode !== null) {
+                console.log(`⚠️ Skipping dimension calculation for ${file.name}: user has unsaved changes`);
+                return;
+            }
+            
+            const fileKey = getFileKey(file);
+            
+            // Check cache first
+            try {
+                const cached = localStorage.getItem(`dingcad_dims_${fileKey}`);
+                if (cached) {
+                    const dims = JSON.parse(cached);
+                    libraryItemDimensions.set(fileKey, dims);
+                    updateLibraryUI();
+                    return;
+                }
+            } catch (e) {
+                // Ignore cache errors
+            }
+            
+            // Mark as calculating
+            libraryItemDimensions.set(fileKey, { width: null, height: null, depth: null, calculating: true });
+            updateLibraryUI();
+            
+            try {
+                // Fetch the file
+                const response = await fetch(file.path);
+                if (!response.ok) {
+                    libraryItemDimensions.delete(fileKey);
+                    updateLibraryUI();
+                    return;
+                }
+                const code = await response.text();
+                
+                // Process the code to ensure it exports a scene
+                let processedCode = code;
+                
+                // Check if it exports scene directly
+                if (code.includes('export const scene')) {
+                    // Good, already exports scene
+                } else if (code.includes('export default')) {
+                    // Has default export, need to wrap it
+                    const funcMatch = code.match(/export\s+default\s+(\w+)\s*;?/);
+                    if (funcMatch) {
+                        processedCode = code.replace(/export\s+default\s+\w+\s*;?\s*/g, '') + 
+                            `\nconst _tempScene = ${funcMatch[1]}();\n` +
+                            `export const scene = _tempScene;`;
+                    }
+                } else {
+                    // Try to find exported function
+                    const exportFuncMatch = code.match(/export\s+function\s+(\w+)/);
+                    if (exportFuncMatch) {
+                        processedCode = code + `\n\nconst _tempScene = ${exportFuncMatch[1]}();\n` +
+                            `export const scene = _tempScene;`;
+                    } else {
+                        // Can't determine how to execute, skip
+                        libraryItemDimensions.delete(fileKey);
+                        updateLibraryUI();
+                        return;
+                    }
+                }
+                
+                // Add dimension calculation code that uses print with special marker
+                // We'll intercept the module's print callback to capture dimensions
+                const dimensionCode = processedCode + '\n\n' +
+                    '// Calculate dimensions\n' +
+                    'if (typeof scene !== "undefined" && scene) {\n' +
+                    '  try {\n' +
+                    '    const box = boundingBox(scene);\n' +
+                    '    const width = Math.round((box.max[0] - box.min[0]) * 10) / 10;\n' +
+                    '    const height = Math.round((box.max[1] - box.min[1]) * 10) / 10;\n' +
+                    '    const depth = Math.round((box.max[2] - box.min[2]) * 10) / 10;\n' +
+                    '    // Print dimensions with special marker for capture\n' +
+                    '    print("DINGCAD_DIMS:" + JSON.stringify({width, height, depth}));\n' +
+                    '  } catch (e) {\n' +
+                    '    // Ignore errors\n' +
+                    '  }\n' +
+                    '}';
+                
+                // Intercept console.log to capture dimensions from print output
+                // The module's print callback calls console.log, so we intercept that
+                const originalConsoleLog = console.log;
+                let dimensions = null;
+                
+                // Create a wrapper that captures our special marker
+                console.log = function(...args) {
+                    originalConsoleLog.apply(console, args);
+                    const text = args.join(' ');
+                    if (typeof text === 'string' && text.includes('DINGCAD_DIMS:')) {
+                        try {
+                            const startIdx = text.indexOf('DINGCAD_DIMS:');
+                            const dimsJson = text.substring(startIdx + 'DINGCAD_DIMS:'.length).trim();
+                            dimensions = JSON.parse(dimsJson);
+                        } catch (e) {
+                            // Ignore parse errors
+                        }
+                    }
+                };
+                
+                try {
+                    // Execute the code
+                    Module.ccall('loadSceneFromCode', null, ['string'], [dimensionCode]);
+                    
+                    // Wait for execution to complete and print callback to fire
+                    // Give it enough time for the scene to load and dimensions to be calculated
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    
+                    // Restore console.log
+                    console.log = originalConsoleLog;
+                    
+                    if (dimensions && dimensions.width !== undefined && !isNaN(dimensions.width)) {
+                        libraryItemDimensions.set(fileKey, dimensions);
+                        // Cache dimensions
+                        try {
+                            localStorage.setItem(`dingcad_dims_${fileKey}`, JSON.stringify(dimensions));
+                        } catch (e) {
+                            // Ignore cache errors
+                        }
+                        updateLibraryUI();
+                    } else {
+                        libraryItemDimensions.delete(fileKey);
+                        updateLibraryUI();
+                    }
+                } catch (e) {
+                    // Restore console.log on error
+                    console.log = originalConsoleLog;
+                    libraryItemDimensions.delete(fileKey);
+                    updateLibraryUI();
+                    console.warn(`⚠️ Could not calculate dimensions for ${file.name}:`, e);
+                }
+            } catch (error) {
+                libraryItemDimensions.delete(fileKey);
+                updateLibraryUI();
+                console.warn(`⚠️ Could not calculate dimensions for ${file.name}:`, error);
+            }
+        }
+        
+        // Update dimensions from the current scene after successful load
+        function updateDimensionsFromLoadedScene(selectedFiles) {
+            if (!Module || !isInitialized || !selectedFiles || selectedFiles.length === 0) {
+                return;
+            }
+            
+            // Don't calculate dimensions if user has unsaved changes - this would execute original code
+            if (hasUnsavedChanges) {
+                return;
+            }
+            
+            // For single file, calculate dimensions by loading it individually
+            if (selectedFiles.length === 1) {
+                const file = selectedFiles[0];
+                const fileKey = getFileKey(file);
+                
+                // Only calculate if not already cached
+                if (!libraryItemDimensions.has(fileKey)) {
+                    calculateItemDimensions(file);
+                }
+            } else {
+                // Multiple files - we can't easily get individual dimensions when combined
+                // So we'll calculate dimensions for each file individually in the background
+                selectedFiles.forEach(file => {
+                    const fileKey = getFileKey(file);
+                    if (!libraryItemDimensions.has(fileKey)) {
+                        // Calculate in background
+                        setTimeout(() => calculateItemDimensions(file), 100);
+                    }
+                });
             }
         }
         
@@ -1221,6 +1735,7 @@
         let libraryFiles = [];
         let libraryPanelVisible = false;
         let selectedLibraryItems = new Set(); // Track selected library items by fileKey
+        let libraryItemDimensions = new Map(); // Cache dimensions for each library item (fileKey -> {width, height, depth})
         
         // Load library manifest dynamically
         async function loadLibraryManifest() {
@@ -1267,23 +1782,28 @@
                 url.searchParams.delete('tz');
             }
             
-            // Handle library items - use 'items' parameter for multiple, 'item' for single (backward compat)
-            url.searchParams.delete('item');
-            url.searchParams.delete('items');
-            
-            if (libraryItems !== null && libraryItems.length > 0) {
-                if (libraryItems.length === 1) {
-                    // Single item - use 'item' for backward compatibility
-                    const fileKey = libraryItems[0].path || `${libraryItems[0].folder || 'root'}/${libraryItems[0].name}`;
-                url.searchParams.set('item', fileKey);
-                } else {
-                    // Multiple items - use 'items' parameter (comma-separated)
-                    const fileKeys = libraryItems.map(item => 
-                        item.path || `${item.folder || 'root'}/${item.name}`
-                    );
-                    url.searchParams.set('items', fileKeys.join(','));
+            // Handle library items - only update if libraryItems is explicitly provided (not null)
+            // If libraryItems is null, preserve existing items in URL
+            if (libraryItems !== null) {
+                // Explicitly setting library items - clear old ones first
+                url.searchParams.delete('item');
+                url.searchParams.delete('items');
+                
+                if (libraryItems.length > 0) {
+                    if (libraryItems.length === 1) {
+                        // Single item - use 'item' for backward compatibility
+                        const fileKey = libraryItems[0].path || `${libraryItems[0].folder || 'root'}/${libraryItems[0].name}`;
+                        url.searchParams.set('item', fileKey);
+                    } else {
+                        // Multiple items - use 'items' parameter (comma-separated)
+                        const fileKeys = libraryItems.map(item => 
+                            item.path || `${item.folder || 'root'}/${item.name}`
+                        );
+                        url.searchParams.set('items', fileKeys.join(','));
+                    }
                 }
             }
+            // If libraryItems is null, we preserve existing item/items params (don't delete them)
             
             if (cameraState !== null) {
                 if (cameraState.yaw !== undefined) url.searchParams.set('yaw', cameraState.yaw.toFixed(4));
@@ -1422,13 +1942,28 @@
             cameraUpdateTimeout = setTimeout(() => {
                 const cameraState = getCameraState();
                 if (cameraState) {
-                    updateURL(null, cameraState);
+                    // Preserve current library items when updating camera
+                    const selectedFiles = Array.from(selectedLibraryItems)
+                        .map(key => libraryFiles.find(f => getFileKey(f) === key))
+                        .filter(f => f !== undefined);
+                    updateURL(selectedFiles.length > 0 ? selectedFiles : null, cameraState, true);
                 }
             }, 300); // 300ms debounce
         }
         
         // Toggle library item selection
         function toggleLibraryItem(file) {
+            // Check if user has unsaved changes before loading new library item
+            if (hasUnsavedChanges && originalCode !== null) {
+                const confirmed = confirm(
+                    'You have unsaved changes to your code. Loading a library item will overwrite your changes.\n\n' +
+                    'Would you like to continue? (Click Cancel to keep your current code, or OK to load the library item)'
+                );
+                if (!confirmed) {
+                    return; // User cancelled, don't change selection
+                }
+            }
+            
             const fileKey = getFileKey(file);
             if (selectedLibraryItems.has(fileKey)) {
                 selectedLibraryItems.delete(fileKey);
@@ -1436,15 +1971,33 @@
                 selectedLibraryItems.add(fileKey);
             }
             updateLibraryUI();
+            // Update URL immediately when items are toggled
+            const selectedFiles = Array.from(selectedLibraryItems)
+                .map(key => libraryFiles.find(f => getFileKey(f) === key))
+                .filter(f => f !== undefined);
+            const currentCameraState = getCameraState();
+            updateURL(selectedFiles.length > 0 ? selectedFiles : [], currentCameraState, true);
             loadSelectedLibraryItems();
         }
         
         // Load all selected library items and combine them
         function loadSelectedLibraryItems(openPanel = false) {
-            if (selectedLibraryItems.size === 0) {
+            // Check if user has unsaved changes and warn them
+            if (hasUnsavedChanges && originalCode !== null) {
+                const confirmed = confirm(
+                    'You have unsaved changes to your code. Loading a library item will overwrite your changes.\n\n' +
+                    'Would you like to continue? (Click Cancel to keep your current code, or OK to load the library item)'
+                );
+                if (!confirmed) {
+                    return; // User cancelled, don't load library item
+                }
+                // User confirmed, proceed with loading
+            }
+            
+                if (selectedLibraryItems.size === 0) {
                 // No items selected - clear the scene
                 if (editor) {
-                    editor.setValue('// No library items selected\n// Select items from the library to load them');
+                    setEditorCode('// No library items selected\n// Select items from the library to load them', true);
                     updateEditorTitle(null);
                     if (Module && isInitialized) {
                         executeCode();
@@ -1621,7 +2174,7 @@
                     }
         
                     if (editor) {
-                    editor.setValue(combinedCode);
+                    setEditorCode(combinedCode, true); // Mark as user action to set original code
                     console.log('  → Combined code loaded into editor');
                     }
                 
@@ -1645,17 +2198,13 @@
                         panel.classList.add('minimized');
                     }
                 
+                    // Syntax highlighting is already handled by setEditorCode
+                    // Just ensure layout is correct
                     if (editor && !useFallbackEditor) {
                         setTimeout(() => {
                             editor.layout();
-                            const model = editor.getModel();
-                            if (model) {
-                                const value = model.getValue();
-                                model.setValue('');
-                                model.setValue(value);
-                            }
-                            editor.render();
-                        }, 100);
+                            editor.render(true);
+                        }, 150);
                     }
                 
                 // Execute code
@@ -1668,6 +2217,10 @@
                                 if (Module && isInitialized) {
                                     clearInterval(checkReady);
                                     executeCode();
+                                    // Calculate dimensions after code execution (only if no unsaved changes)
+                                    if (!hasUnsavedChanges) {
+                                        setTimeout(() => calculateLibraryItemDimensions(selectedFiles), 500);
+                                    }
                             } else if (attempts > 20) {
                                     clearInterval(checkReady);
                                     updateStatus('Error: Module initialization timeout', 'error');
@@ -1676,6 +2229,10 @@
                             }, 100);
                         } else {
                             executeCode();
+                            // Calculate dimensions after code execution (only if no unsaved changes)
+                            if (!hasUnsavedChanges) {
+                                setTimeout(() => calculateLibraryItemDimensions(selectedFiles), 500);
+                            }
                         }
                     }, 50);
                 
@@ -1714,6 +2271,17 @@
                     }
                 }
             });
+            
+            // Also update URL to reflect current selection
+            if (libraryFiles && libraryFiles.length > 0) {
+                const selectedFiles = Array.from(selectedLibraryItems)
+                    .map(key => libraryFiles.find(f => getFileKey(f) === key))
+                    .filter(f => f !== undefined);
+                const currentCameraState = getCameraState();
+                if (currentCameraState || selectedFiles.length > 0) {
+                    updateURL(selectedFiles.length > 0 ? selectedFiles : [], currentCameraState, true);
+                }
+            }
         }
         
         function populateLibraryList() {
@@ -1770,11 +2338,22 @@
                     item.dataset.fileKey = fileKey;
                     
                     const isSelected = selectedLibraryItems.has(fileKey);
+                    const dims = libraryItemDimensions.get(fileKey);
+                    let dimsText = '';
+                    
+                    if (dims) {
+                        if (dims.calculating) {
+                            dimsText = '<div class="library-item-dims">Calculating dimensions...</div>';
+                        } else if (dims.width !== null && dims.height !== null && dims.depth !== null) {
+                            dimsText = `<div class="library-item-dims">${dims.width.toFixed(1)} × ${dims.height.toFixed(1)} × ${dims.depth.toFixed(1)} mm</div>`;
+                        }
+                    }
                     
                     item.innerHTML = `
                         <div style="flex: 1;">
                         <div class="library-item-name">${file.name}</div>
                         <div class="library-item-desc">${file.desc || 'No description'}</div>
+                        ${dimsText}
                         </div>
                     `;
                     
@@ -1788,10 +2367,29 @@
                     }
                     
                     list.appendChild(item);
+                    
+                    // Calculate dimensions for this item if not already cached
+                    if (!dims && Module && isInitialized) {
+                        // Calculate dimensions after a delay to avoid blocking UI
+                        // Use a longer delay for items further down the list to avoid overwhelming the system
+                        // IMPORTANT: Check for unsaved changes before scheduling, and also check inside the timeout
+                        const delay = Math.min(100 + (list.children.length * 50), 2000);
+                        setTimeout(() => {
+                            // Double-check unsaved changes before executing (in case user edited code during delay)
+                            if (!hasUnsavedChanges || originalCode === null) {
+                                calculateItemDimensions(file);
+                            } else {
+                                console.log(`⚠️ Skipping dimension calculation for ${file.name}: user has unsaved changes`);
+                            }
+                        }, delay);
+                    }
                 });
             });
             
             console.log(`✅ Library list populated with ${folders.length} folders`);
+            
+            // Update UI to reflect any pre-selected items (e.g., from URL or localStorage)
+            updateLibraryUI();
         }
         
         document.getElementById('library-toggle').addEventListener('click', toggleLibraryPanel);
@@ -1869,11 +2467,25 @@
             if (itemsToLoad.length > 0) {
                 console.log(`✅ Found ${itemsToLoad.length} library item(s) in URL: ${itemsToLoad.map(f => f.name).join(', ')}, loading...`);
                 
+                // Check if user has unsaved changes - if so, don't auto-load from URL
+                // This prevents overwriting user's modified code when URL is parsed
+                if (hasUnsavedChanges && originalCode !== null) {
+                    console.log('⚠️ User has unsaved changes, skipping auto-load from URL to preserve edits');
+                    // Still update selected items in UI for reference, but don't load the code
+                    selectedLibraryItems.clear();
+                    itemsToLoad.forEach(file => {
+                        selectedLibraryItems.add(getFileKey(file));
+                    });
+                    updateLibraryUI();
+                    return true; // Return true to indicate URL was parsed, but don't load code
+                }
+                
                 // Set selected items
                 selectedLibraryItems.clear();
                 itemsToLoad.forEach(file => {
                     selectedLibraryItems.add(getFileKey(file));
                 });
+                // Update UI immediately (will also update URL)
                 updateLibraryUI();
                 
                 // Load them after module is ready (don't open library panel when loading from URL)
@@ -1957,6 +2569,7 @@
                                 matchingFiles.forEach(file => {
                                     selectedLibraryItems.add(getFileKey(file));
                                 });
+                                // Update UI immediately (will also update URL)
                                 updateLibraryUI();
                                 
                                 // Load them after a short delay
@@ -1985,9 +2598,20 @@
                 if (matchingFile) {
                     console.log(`✅ Found saved library item: ${matchingFile.name}, auto-loading...`);
                         
+                        // Check if user has unsaved changes - if so, don't auto-load
+                        if (hasUnsavedChanges && originalCode !== null) {
+                            console.log('⚠️ User has unsaved changes, skipping auto-load from localStorage to preserve edits');
+                            // Still update selected items in UI for reference, but don't load the code
+                            selectedLibraryItems.clear();
+                            selectedLibraryItems.add(getFileKey(matchingFile));
+                            updateLibraryUI();
+                            return true; // Return true to indicate item was found, but don't load code
+                        }
+                        
                         // Set selected item
                         selectedLibraryItems.clear();
                         selectedLibraryItems.add(getFileKey(matchingFile));
+                        // Update UI immediately (will also update URL)
                         updateLibraryUI();
                         
                         // Load it after a short delay
@@ -2013,15 +2637,28 @@
         // Initialize on page load
         let moduleInitialized = false;
         let manifestLoaded = false;
+        let autoLoadAttempted = false; // Track if we've already tried to auto-load (prevent multiple attempts)
         
         function checkAndAutoLoad() {
+            // Only auto-load once on initial page load
+            if (autoLoadAttempted) {
+                return;
+            }
+            
             if (moduleInitialized && manifestLoaded) {
+                autoLoadAttempted = true; // Mark as attempted
                 // Both are ready, try to parse URL and restore state
                 setTimeout(() => {
-                    const urlRestored = parseURLAndRestoreState();
-                    // If URL didn't have an item, fall back to localStorage
-                    if (!urlRestored) {
-                        autoLoadLastLibraryItem();
+                    // Only auto-load if user doesn't have unsaved changes
+                    // This prevents overwriting user's edits when page is reloaded
+                    if (!hasUnsavedChanges) {
+                        const urlRestored = parseURLAndRestoreState();
+                        // If URL didn't have an item, fall back to localStorage
+                        if (!urlRestored) {
+                            autoLoadLastLibraryItem();
+                        }
+                    } else {
+                        console.log('⚠️ Skipping auto-load: user has unsaved changes');
                     }
                 }, 500);
             }
@@ -2063,6 +2700,16 @@
                 setTimeout(startCameraTracking, 100);
             }
         }
+        
+        // Warn user before leaving page with unsaved changes
+        window.addEventListener('beforeunload', (e) => {
+            if (hasUnsavedChanges && originalCode !== null) {
+                // Standard way to show browser warning
+                e.preventDefault();
+                e.returnValue = 'You have unsaved changes. If you leave, your changes will be lost.';
+                return e.returnValue;
+            }
+        });
         
         loadLibraryManifest().then(() => {
             console.log('✅ Library manifest loaded');
